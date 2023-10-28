@@ -7,10 +7,11 @@ from .models import UserProfile, Post
 from .serializers import UserSerializer, PostSerializer
 from django.contrib.auth.models import User
 from rest_framework_simplejwt.tokens import RefreshToken
-from django.core.exceptions import ValidationError
+from django.core.exceptions import ValidationError, ObjectDoesNotExist
 from django.db import IntegrityError
 from django.core.validators import validate_email
 from django.core.exceptions import ValidationError as EmailValidationError
+from django.shortcuts import get_object_or_404
 
 
 class UserSignup(APIView):
@@ -22,7 +23,6 @@ class UserSignup(APIView):
         password = request.data.get('password')
 
         # Add email format validation
-
         try:
             validate_email(email)
         except EmailValidationError:
@@ -45,9 +45,9 @@ class UserSignup(APIView):
             city = ipinfo_data.get('city')
             region = ipinfo_data.get('region')
             country = ipinfo_data.get('country')
-
         except requests.RequestException as e:
-            return Response({'error': f'Error fetching IP information: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            return Response({'error': f'Error fetching IP information: {str(e)}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         try:
             user_profile, created = UserProfile.objects.get_or_create(user=user)
@@ -55,14 +55,14 @@ class UserSignup(APIView):
             user_profile.region = region
             user_profile.country = country
             user_profile.save()
-            # return Response({'message': 'User created successfully'}, status=status.HTTP_201_CREATED)
+            refresh = RefreshToken.for_user(user)
+            access_token = str(refresh.access_token)
+            return Response({'access_token': access_token}, status=status.HTTP_201_CREATED)
+        except ObjectDoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
         except Exception as e:
-            return Response({'error': f'Error creating user profile: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
-        refresh = RefreshToken.for_user(user)
-        access_token = str(refresh.access_token)
-
-        return Response({'access_token': access_token}, status=status.HTTP_201_CREATED)
+            return Response({'error': f'Error creating user profile: {str(e)}'},
+                            status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class UserLogin(APIView):
@@ -84,7 +84,7 @@ class UserLogin(APIView):
 
 
 class PostList(APIView):
-    permissions_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         posts = Post.objects.all()
@@ -103,53 +103,40 @@ class PostDetail(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self, post_id):
-        try:
-            return Post.objects.get(id=post_id)
-        except Post.DoesNotExist:
-            return None
+        return get_object_or_404(Post, id=post_id)
 
     def get(self, request, post_id):
         post = self.get_object(post_id)
-        if post:
-            serializer = PostSerializer(post)
-            return Response(serializer.data)
-        return Response({'error': 'Post not found'}, status=status.HTTP_400_BAD_REQUEST)
+        serializer = PostSerializer(post)
+        return Response(serializer.data)
 
     def put(self, request, post_id):
         post = self.get_object(post_id)
-        if post:
-            serializer = PostSerializer(post, data=request.data)
-            if serializer.is_valid():
-                serializer.save(user=request.user)
-                return Response(serializer.data)
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+        serializer = PostSerializer(post, data=request.data)
+        if serializer.is_valid():
+            serializer.save(user=request.user)
+            return Response(serializer.data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, post_id):
         post = self.get_object(post_id)
-        if post:
-            post.delete()
-            return Response({'message': 'Post deleted successfully'}, status=status.HTTP_200_OK)
-        return Response({'error': 'Access denied'}, status=status.HTTP_403_FORBIDDEN)
+        post.delete()
+        return Response({'message': 'Post deleted successfully'}, status=status.HTTP_200_OK)
 
 
 class PostLikeUnlike(APIView):
-    permissions_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated]
 
     def post(self, request, post_id):
-        post = Post.objects.filter(id=post_id).first()
-        if post:
-            if request.user not in post.likes.all():
-                post.likes.add(request.user)
-                return Response({'message': 'Post liked'}, status=status.HTTP_200_OK)
-            return Response({'message': 'You have already liked this post'}, status=status.HTTP_400_BAD_REQUEST)
-
-        return Response({'error': 'Post not found'}, status=status.HTTP_400_BAD_REQUEST)
+        post = get_object_or_404(Post, id=post_id)
+        if request.user not in post.likes.all():
+            post.likes.add(request.user)
+            return Response({'message': 'Post liked'}, status=status.HTTP_200_OK)
+        return Response({'message': 'You have already liked this post'}, status=status.HTTP_400_BAD_REQUEST)
 
     def delete(self, request, post_id):
-        post = Post.objects.filter(id=post_id).first()
-        if post:
-            if request.user in post.likes.all():
-                post.likes.remove(request.user)
-                return Response({'message': 'Like removed'}, status=status.HTTP_200_OK)
-            return Response({'message': 'You have not liked this post'}, status=status.HTTP_400_BAD_REQUEST)
+        post = get_object_or_404(Post, id=post_id)
+        if request.user in post.likes.all():
+            post.likes.remove(request.user)
+            return Response({'message': 'Like removed'}, status=status.HTTP_200_OK)
+        return Response({'message': 'You have not liked this post'}, status=status.HTTP_400_BAD_REQUEST)
